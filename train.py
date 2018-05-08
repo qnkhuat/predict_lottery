@@ -1,35 +1,95 @@
-import tensorflow as tf
 import numpy as np
-from tensorflow.python.framework import ops
-import matplotlib.pyplot as plt
 import math
 import time
 import os
 import random
-import data_process as dp
-
+import tensorflow as tf
+from data.utlis import *
+from tensorflow.python.framework import ops
 _keep_rate = 0.5
 _iter = 1000
 _lr = 0.0001
 
-
-def create_placeholders(n_H, n_W, n_C, n_y):
-    X = tf.placeholder(shape=[None, n_H, n_W, n_C], dtype=tf.float32)
-    Y = tf.placeholder(shape=[None, n_y], dtype=tf.float32)
-
-    return X, Y
+def create_placeholders(number_of_ref_days,all_numbers,n_C):
+    X = tf.placeholder(shape=[None,number_of_ref_days,all_numbers,n_C],dtype=tf.float32)
+    Y = tf.placeholder(shape=[None,all_numbers],dtype=tf.float32)
+    return X,Y
 
 
 def prepare_params(X):
-    m_train, n_H_train, n_W_train, n_C_train = X.shape
-    X, Y = create_placeholders(n_H_train, n_W_train, n_C_train, 10)
+    m,number_of_ref_days,all_numbers,n_C = X.shape#n_C=1
+    assert all_numbers == 100 ,'seems like input order is wrong'
+    X,Y=create_placeholders(number_of_ref_days,all_numbers,n_C)
+    return X,Y
 
-    return X, Y
 
 
-def compute_cost(Z3, Y):
-    cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=Z3, labels=Y))
-    return cost
+def compute_cost(Z,Y):
+        # return tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(logits=Z,labels=Y))
+        return tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels = Y,logits =Z)) # NOTE: use sigmoid instead of softmax
+
+def conv_layer(name, X_train,in_c,out_c,filter=3,stride=2,is_max_pool=False):
+    name_scope = 'conv_max' if is_max_pool else 'conv'
+    with tf.name_scope(name_scope):
+        with tf.name_scope('weights'):
+            W = tf.get_variable('W'+name,[filter,filter,in_c,out_c],initializer = tf.contrib.keras.initializers.he_normal()) # NOTE: Didn't provide the shape yet
+            var_summary(W)
+        with tf.name_scope('biases'):
+            b=tf.get_variable('b'+name,[out_c],initializer = tf.constant_initializer(0.1)) # NOTE: need to fine_tune this
+            var_summary(b)
+
+        Z = tf.nn.conv2d(X_train,W,strides=[1,stride,stride,1],padding='SAME')
+        pre_activation = tf.nn.bias_add(Z,b)
+        batch_norm = tf.contrib.layers.batch_norm(pre_activation, decay= 0.9,center=True,scale =True,epsilon=1e-3,updates_collections=None)
+        out = tf.nn.sigmoid(batch_norm) # NOTE: use sigmoid instead of relu
+
+
+        if is_max_pool:
+            out = tf.nn.max_pool(out,ksize = [1,2,2,1] ,strides = [1,2,2,1] ,padding='SAME')
+
+        return out
+
+
+def fc(input , dropout ,is_dropout=True):
+    output = tf.contrib.layers.flatten(input)
+    if is_dropout:
+        output = tf.nn.dropout(output,dropout)
+    output = tf.contrib.layers.fully_connected(output,1024,activation_fn= None)
+    output = tf.contrib.layers.fully_connected(output,100,activation_fn= None)
+    return output
+
+def fc_vgg(input , dropout,is_dropout=True,is_activate = True):
+    with tf.name_scope('fc'):
+        output = tf.contrib.layers.flatten(input)
+        if is_dropout:
+            output = tf.nn.dropout(output,dropout)
+        if is_activate:
+            output = tf.contrib.layers.fully_connected(output, out_c, activation_fn=activate)
+        else:
+            output = tf.contrib.layers.fully_connected(output, out_c)
+
+    return output
+
+
+
+def forward_prop(X_train,dropout):
+    conv = conv_layer('1',X_train,in_c=1,out_c=8)
+    conv = conv_layer('2',conv,in_c=8,out_c=16,is_max_pool=True)
+
+    conv = conv_layer('3',conv,in_c=16,out_c=32)
+    conv = conv_layer('4',conv,in_c=32,out_c=64,is_max_pool=True)
+
+    conv = conv_layer('5',conv,in_c=64,out_c=128)
+    conv = conv_layer('6',conv,in_c=128,out_c=256,is_max_pool=True)
+
+    conv = conv_layer('7',conv,in_c=256,out_c=256)
+    conv = conv_layer('8',conv,in_c=256,out_c=256,is_max_pool=True)
+
+    output = fc(conv,dropout)
+
+    return output
+
+
 
 
 def var_summary(var):
@@ -45,129 +105,50 @@ def var_summary(var):
         tf.summary.histogram('histogram', var)
 
 
-def conv(name, X_train, in_c, out_c, is_max_pool=False):
-    name_scope = 'conv_max' if is_max_pool else 'conv'
-
-    with tf.name_scope(name_scope):
-        with tf.name_scope('weights'):
-            W = tf.get_variable('W' + name, [4, 4, in_c, out_c], initializer=tf.contrib.keras.initializers.he_normal())
-            var_summary(W)
-        with tf.name_scope('biases'):
-            b = tf.get_variable('b' + name, [out_c], initializer=tf.constant_initializer(0.1))
-            var_summary(b)
-
-        Z = tf.nn.conv2d(X_train, W, strides=[1, 2, 2, 1], padding='SAME')
-        pre_activation = tf.nn.bias_add(Z, b)
-        batch_norm = tf.contrib.layers.batch_norm(pre_activation, decay=0.9, center=True, scale=True, epsilon=1e-3,
-                                                  updates_collections=None)
-        out = tf.nn.relu(batch_norm)
-
-        if is_max_pool:
-            out = tf.nn.max_pool(out, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME')
-
-    return out
-
-
-def fc(input,dropout,is_dropout=True):
-    output = tf.contrib.layers.flatten(input)
-    if is_dropout:
-        output = tf.nn.dropout(output,dropout)
-    output = tf.contrib.layers.fully_connected(output, 1024, activation_fn=None)
-    output = tf.contrib.layers.fully_connected(output, 10, activation_fn=None)
-    return output
-
-
-def fc_vgg(activation,out_c, dropout, is_dropout=True,is_activate=True):
-    if is_activate:
-        activate=tf.nn.relu
-    else:
-        activate=None
-
-    with tf.name_scope('fc'):
-        output = tf.contrib.layers.flatten(activation)
-        if is_dropout:
-            output = tf.nn.dropout(output, dropout)
-        output = tf.contrib.layers.fully_connected(output, out_c, activation_fn=activate)
-    return output
-
-def forward_prop(X_train, dropout):
-    conv1 = conv('W1', X_train, 3, 8)
-    conv2 = conv('W2', conv1, 8, 16, is_max_pool=True)
-
-    conv3 = conv('W3', conv2, 16, 32)
-    conv4 = conv('W4', conv3, 32, 64, is_max_pool=True)
-
-    conv5 = conv('W5', conv4, 64, 128)
-    conv6 = conv('W6', conv5, 128, 256, is_max_pool=True)
-
-    output = fc(conv6, dropout)
-
-    # convs = conv('7', convs, 256, 512)
-    # convs = conv('8', convs, 512, 512, is_max_pool=True)
-    #
-    # convs = conv('9', convs, 512, 512)
-    # convs = conv('10', convs, 512, 512, is_max_pool=True)
-
-
-    # output = fc(conv6, dropout)
-    #
-    # fc1 = fc_vgg(convs,4096,dropout)
-    # fc2 = fc_vgg(fc1, 4096, dropout)
-
-    # fc3 = fc(convs, dropout)
-    # output=tf.nn.softmax(fc3)
-    return output
-
-
-def predict(Y, output):
-    correct_prediction = tf.equal(tf.argmax(output, 1), tf.argmax(Y, 1))
-
-    accuracy = tf.reduce_mean(tf.cast(correct_prediction, "float"))
-
+def predict(Y,output):
+    # correct_prediction = tf.equal(tf.argmax(output,1), tf.nn.k_top(Y,27))
+    correct_prediction = tf.equal(tf.round(tf.nn.sigmoid(output)), Y)
+    accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
     return accuracy
 
 
 def main():
-
-    X_train_origin, Y_train_origin, X_test_origin, Y_test_origin = dp.loadData()
-    X_train_origin,X_test_origin=dp.data_preprocessing(X_train_origin,X_test_origin)
+    X_train,Y_train=load_data('data/train.txt')
+    X_test,Y_test=load_data('data/test.txt')
 
     ops.reset_default_graph()
 
-    X, Y = prepare_params(X_train_origin)
 
-    keep_prob = tf.placeholder(tf.float32)
-    learning_rate = tf.placeholder(tf.float32)
+    X,Y = prepare_params(X_train)
 
-    output = forward_prop(X, keep_prob)
-    cost = compute_cost(output, Y)
+    keep_prob= tf.placeholder(tf.float32)
+    lr = tf.placeholder(tf.float32)
+    output = forward_prop(X,keep_prob)
+    cost=compute_cost(output,Y)
 
     with tf.name_scope('train'):
-        optimizer = tf.train.AdamOptimizer(learning_rate).minimize(cost)
+        optimizer = tf.train.AdamOptimizer(lr).minimize(cost)
 
-    with tf.name_scope('accuracy'):
+    with tf.name_scope('accuracy'): # NOTE: need to chagne predict
         accuracy = predict(Y, output)
-
     tf.summary.scalar('accuracy', accuracy)
 
-    m = X_train_origin.shape[0]
-    minibatch_size = 32
 
-    # load data from txt
-    cache_files_name = ['data/costs.txt', 'data/trains.txt', 'data/tests.txt']
-    dp.ensure_dir(cache_files_name)
-    costs, trains, tests = dp.load_txt(cache_files_name)
+    m=X_train.shape[0]
+
 
     init = tf.global_variables_initializer()
     saver = tf.train.Saver()
 
-    with tf.Session(config=tf.ConfigProto(log_device_placement=False)) as sess:
+    with tf.Session() as sess:
         sess.run(init)
+
         merged = tf.summary.merge_all()
 
         train_writer = tf.summary.FileWriter('graph/2' + '/train',
                                              sess.graph)
         test_writer = tf.summary.FileWriter('graph/2' + '/test')
+
 
         try:
             ckpt = tf.train.get_checkpoint_state('./checkpoint/')
@@ -178,54 +159,32 @@ def main():
 
         for i in range(_iter):
             global _lr
-            if i>=10:
-                lr=_lr/2
-            elif i>=100:
-                lr=_lr=10
-            else :
-                lr = _lr
-
             start_time = time.time()
+            _,temp_cost = sess.run([optimizer,cost],feed_dict= {X:X_train,Y:Y_train,keep_prob:_keep_rate,lr:_lr})
 
-            minibatch_cost = 0
-            num_minibatches = int(m / minibatch_size)
-            minibatches = dp.random_mini_batches(X_train_origin, Y_train_origin, minibatch_size)
+            end_time =time.time()
+            total_time=end_time -start_time
 
-            for minibatch in minibatches:
-                (minibatch_X, minibatch_Y) = minibatch
-                minibatch_X = dp.data_augmentation(minibatch_X)
-                _, temp_cost = sess.run([optimizer, cost],feed_dict={X: minibatch_X, Y: minibatch_Y, keep_prob: _keep_rate,learning_rate:lr})
-
-                minibatch_cost += temp_cost / num_minibatches
-
-            costs = np.append(costs, minibatch_cost)
-
-            end_time = time.time()
-            total_time = end_time - start_time
-
-            if i % 10 == 0:
-                summary, train_accuracy = sess.run([merged, accuracy], feed_dict={X: X_train_origin, Y: Y_train_origin,
-                                                                                  keep_prob: _keep_rate})
+            if i%10:
+                summary, train_accuracy = sess.run([merged, accuracy], feed_dict={X: X_train, Y: Y_train,
+                                                                                  keep_prob: _keep_rate,lr:_lr})
                 train_writer.add_summary(summary, i)
 
                 summary, test_accuracy = sess.run([merged, accuracy],
-                                                  feed_dict={X: X_test_origin, Y: Y_test_origin, keep_prob: 1.0})
+                                                  feed_dict={X: X_test, Y: Y_test, keep_prob: 1.0,lr:_lr})
                 test_writer.add_summary(summary, i)
 
-                trains, tests = dp.append_data(trains, tests, train_accuracy, test_accuracy)
-
-                # save data to txt
-                dp.save_txt(costs, trains, tests, cache_files_name)
                 print("cost after {} iters : {} in {} each with train accuracy = {} and test accuracy = {} ".format(i,
-                                                                                                                    minibatch_cost,
+                                                                                                                    temp_cost,
                                                                                                                     total_time,
                                                                                                                     train_accuracy,
                                                                                                                     test_accuracy))
 
                 saver.save(sess, "./checkpoint/model.ckpt", global_step=1)
 
-        print("Train Accuracy:", train_accuracy)
-        print("Test Accuracy:", test_accuracy)
+
+
+
 
 
 if __name__ == "__main__":
