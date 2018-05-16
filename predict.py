@@ -6,12 +6,14 @@ import random
 import tensorflow as tf
 from data.utlis import *
 from tensorflow.python.framework import ops
+from data.convert import *
 _keep_rate = 0.5
 _iter = 1000
 _lr = 0.0001
 
 def create_placeholders(number_of_ref_days,all_numbers,n_C):
-    X = tf.placeholder(shape=[None,number_of_ref_days,all_numbers,n_C],dtype=tf.float32)
+    X = tf.placeholder(shape=[None,number_of_ref_days,all_numbers,n_C]
+                       ,dtype=tf.float32)
     Y = tf.placeholder(shape=[None,all_numbers],dtype=tf.float32)
     return X,Y
 
@@ -22,11 +24,10 @@ def prepare_params(X):
     X,Y=create_placeholders(number_of_ref_days,all_numbers,n_C)
     return X,Y
 
-
-
 def compute_cost(Z,Y):
         # return tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(logits=Z,labels=Y))
-    cost =tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels = Y,logits =Z))
+    cost =tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels = Y
+                                                                 ,logits =Z))
     var_summary(cost)
     return cost  # NOTE: use sigmoid instead of softmax
 
@@ -34,20 +35,24 @@ def conv_layer(name, X_train,in_c,out_c,filter=3,stride=2,is_max_pool=False):
     name_scope = 'conv_max' if is_max_pool else 'conv'
     with tf.name_scope(name_scope):
         with tf.name_scope('weights'):
-            W = tf.get_variable('W'+name,[filter,filter,in_c,out_c],initializer = tf.contrib.keras.initializers.he_normal()) # NOTE: Didn't provide the shape yet
+            W = tf.get_variable('W'+name,[filter,filter,in_c,out_c]
+                    ,initializer = tf.contrib.keras.initializers.he_normal()) # NOTE: Didn't provide the shape yet
             var_summary(W)
         with tf.name_scope('biases'):
-            b=tf.get_variable('b'+name,[out_c],initializer = tf.constant_initializer(0.1)) # NOTE: need to fine_tune this
+            b=tf.get_variable('b'+name,[out_c]
+                              ,initializer = tf.constant_initializer(0.1)) # NOTE: need to fine_tune this
             var_summary(b)
 
         Z = tf.nn.conv2d(X_train,W,strides=[1,stride,stride,1],padding='SAME')
         pre_activation = tf.nn.bias_add(Z,b)
-        batch_norm = tf.contrib.layers.batch_norm(pre_activation, decay= 0.9,center=True,scale =True,epsilon=1e-3,updates_collections=None)
+        batch_norm = tf.contrib.layers.batch_norm(pre_activation, decay= 0.9
+                  ,center=True,scale =True,epsilon=1e-3,updates_collections=None)
         out = tf.nn.sigmoid(batch_norm) # NOTE: use sigmoid instead of relu
 
 
         if is_max_pool:
-            out = tf.nn.max_pool(out,ksize = [1,2,2,1] ,strides = [1,2,2,1] ,padding='SAME')
+            out = tf.nn.max_pool(out,ksize = [1,2,2,1] ,strides = [1,2,2,1]
+                                 ,padding='SAME')
 
         return out
 
@@ -66,7 +71,8 @@ def fc_vgg(input , dropout,is_dropout=True,is_activate = True):
         if is_dropout:
             output = tf.nn.dropout(output,dropout)
         if is_activate:
-            output = tf.contrib.layers.fully_connected(output, out_c, activation_fn=activate)
+            output = tf.contrib.layers.fully_connected(output, out_c
+                                                       , activation_fn=activate)
         else:
             output = tf.contrib.layers.fully_connected(output, out_c)
 
@@ -115,42 +121,30 @@ def predict(Y,output):
 
 
 def main():
-    X_train,Y_train=load_data('data/train.txt')
-    X_test,Y_test=load_data('data/test.txt')
+    update('data/predict.xlsx')
+    X_train= convert_dat_to_predict('data/predict.xlsx','data/predict.txt',10)
 
     ops.reset_default_graph()
-
 
     X,Y = prepare_params(X_train)
 
     keep_prob= tf.placeholder(tf.float32)
     lr = tf.placeholder(tf.float32)
     output = forward_prop(X,keep_prob)
-    cost=compute_cost(output,Y)
-
-    with tf.name_scope('train'):
-        optimizer = tf.train.AdamOptimizer(lr).minimize(cost)
 
     with tf.name_scope('accuracy'): # NOTE: need to chagne predict
         accuracy = predict(Y, output)
     tf.summary.scalar('accuracy', accuracy)
-
-
-    m=X_train.shape[0]
-
 
     init = tf.global_variables_initializer()
     saver = tf.train.Saver()
 
     with tf.Session() as sess:
         sess.run(init)
-
         merged = tf.summary.merge_all()
-
         train_writer = tf.summary.FileWriter('graph/2' + '/train',
                                              sess.graph)
         test_writer = tf.summary.FileWriter('graph/2' + '/test')
-
 
         try:
             ckpt = tf.train.get_checkpoint_state('./checkpoint/')
@@ -159,34 +153,15 @@ def main():
         except:
             print("No checkpoint found.")
 
-        for i in range(_iter):
+        for i in range(1):
             global _lr
             start_time = time.time()
-            _,temp_cost = sess.run([optimizer,cost],feed_dict= {X:X_train,Y:Y_train,keep_prob:_keep_rate,lr:_lr})
-
+            out = sess.run([output],feed_dict= {X:X_train,keep_prob:_keep_rate
+                                                ,lr:_lr})
+            order = np.argsort(out[0])
+            print(np.sort(order[0][73:]))
             end_time =time.time()
             total_time=end_time -start_time
-
-            if i%10==0:
-                summary, train_accuracy = sess.run([merged, accuracy], feed_dict={X: X_train, Y: Y_train,
-                                                                                  keep_prob: _keep_rate,lr:_lr})
-                train_writer.add_summary(summary, i)
-
-                summary, test_accuracy = sess.run([merged, accuracy],
-                                                  feed_dict={X: X_test, Y: Y_test, keep_prob: 1.0,lr:_lr})
-                test_writer.add_summary(summary, i)
-
-                print("cost after {} iters : {} in {} each with train accuracy = {} and test accuracy = {} ".format(i,
-                                                                                                                    temp_cost,
-                                                                                                                    total_time,
-                                                                                                                    train_accuracy,
-                                                                                                                    test_accuracy))
-
-                saver.save(sess, "./checkpoint/model.ckpt", global_step=1)
-
-
-
-
 
 
 if __name__ == "__main__":
