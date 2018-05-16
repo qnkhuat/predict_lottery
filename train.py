@@ -23,12 +23,12 @@ def prepare_params(X):
     return X,Y
 
 
-
-def compute_cost(Z,Y):
-        # return tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(logits=Z,labels=Y))
-    cost =tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels = Y,logits =Z))
-    var_summary(cost)
-    return cost  # NOTE: use sigmoid instead of softmax
+def compute_cost(Z, Y):
+    # return tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(logits=Z,labels=Y))
+        with tf.name_scope('cost'):
+            cost = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=Y, logits=Z))
+            var_summary(cost)
+        return cost  # NOTE: use sigmoid instead of softmax
 
 def conv_layer(name, X_train,in_c,out_c,filter=3,stride=2,is_max_pool=False):
     name_scope = 'conv_max' if is_max_pool else 'conv'
@@ -108,8 +108,14 @@ def var_summary(var):
 
 
 def predict(Y,output):
-    # correct_prediction = tf.equal(tf.argmax(output,1), tf.nn.k_top(Y,27))
-    correct_prediction = tf.equal(tf.round(tf.nn.sigmoid(output)), Y)
+    predicted = tf.nn.sigmoid(output)
+    threshold = tf.expand_dims(tf.reduce_mean(predicted, axis=1), axis=-1)
+    mask1 = tf.to_float(predicted > threshold)  # mask of 50%
+    after = tf.multiply(mask1, predicted)  # multiply to eleminate all the point smaller than threshold1
+    threshold2 = tf.expand_dims(tf.reduce_mean(after, axis=1) * 2, axis=-1)
+    predict_result = tf.to_float(predicted > threshold2)  # this is just predict for about 22-23 number
+
+    correct_prediction = tf.equal(predict_result, Y)
     accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
     return accuracy
 
@@ -134,9 +140,6 @@ def main():
     with tf.name_scope('accuracy'): # NOTE: need to chagne predict
         accuracy = predict(Y, output)
     tf.summary.scalar('accuracy', accuracy)
-
-
-    m=X_train.shape[0]
 
 
     init = tf.global_variables_initializer()
@@ -183,6 +186,10 @@ def main():
                                                                                                                     test_accuracy))
 
                 saver.save(sess, "./checkpoint/model.ckpt", global_step=1)
+
+
+
+
 
 
 
